@@ -34,6 +34,7 @@ import org.wso2.carbon.identity.core.model.SAMLSSOServiceProviderDO;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.sso.saml.SAMLSSOConstants;
 import org.wso2.carbon.identity.sso.saml.SSOServiceProviderConfigManager;
+import org.wso2.carbon.identity.sso.saml.common.SAMLSSOProviderConstants;
 import org.wso2.carbon.identity.sso.saml.util.SAMLSSOUtil;
 
 import java.io.File;
@@ -56,7 +57,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
  */
 public class FileBasedConfigManager {
 
-    private static Log log = LogFactory.getLog(FileBasedConfigManager.class);
+    private static final Log log = LogFactory.getLog(FileBasedConfigManager.class);
 
     private static volatile FileBasedConfigManager instance = null;
 
@@ -146,12 +147,30 @@ public class FileBasedConfigManager {
             spDO.setLoginPageURL(IdentityUtil
                     .fillURLPlaceholders(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.CUSTOM_LOGIN_PAGE)));
 
+            if ((getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.NAME_ID_FORMAT)) != null) {
+                spDO.setNameIDFormat(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.NAME_ID_FORMAT));
+            }
+
             if ((getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.SINGLE_LOGOUT)) != null) {
                 singleLogout = Boolean.valueOf(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.SINGLE_LOGOUT));
                 spDO.setSloResponseURL(IdentityUtil
                         .fillURLPlaceholders(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.SLO_RESPONSE_URL)));
                 spDO.setSloRequestURL(IdentityUtil
                         .fillURLPlaceholders(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.SLO_REQUEST_URL)));
+            }
+
+            if ((getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.FRONT_CHANNEL_LOGOUT)) != null) {
+                spDO.setDoFrontChannelLogout(Boolean.valueOf(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig
+                        .FRONT_CHANNEL_LOGOUT)));
+                if(spDO.isDoFrontChannelLogout()) {
+                    if (getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.FRONT_CHANNEL_LOGOUT_BINDING) != null) {
+                        spDO.setFrontChannelLogoutBinding(getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig
+                                .FRONT_CHANNEL_LOGOUT_BINDING));
+                    } else {
+                        // Default is redirect-binding.
+                        spDO.setFrontChannelLogoutBinding(SAMLSSOProviderConstants.HTTP_REDIRECT_BINDING);
+                    }
+                }
             }
 
             if ((getTextValue(elem, SAMLSSOConstants.FileBasedSPConfig.SIGN_ASSERTION)) != null) {

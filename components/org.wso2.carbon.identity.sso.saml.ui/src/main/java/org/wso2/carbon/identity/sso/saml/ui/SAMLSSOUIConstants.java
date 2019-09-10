@@ -56,8 +56,17 @@ public class SAMLSSOUIConstants {
     public static final String ENABLE_ASSERTION_QUERY_REQUEST_PROFILE = "enableAssertionQueryRequestProfile";
     public static final String SUPPORTED_ASSERTION_QUERY_REQUEST_TYPES = "supportedAssertionQueryRequestTypes";
     public static final String DEFAULT_CERTIFICATE_ALIAS = "wso2carbon";
+    public static final String ENABLE_SAML2_ARTIFACT_BINDING = "enableSAML2ArtifactBinding";
+    public static final String ENABLE_SIGNATURE_VALIDATION_IN_ARTIFACT_RESOLVE =
+            "enableSignatureValidationInArtifactResolve";
 
     public static final String SESSION_ATTRIBUTE_NAME_APPLICATION_CERTIFICATE = "applicationCertificate";
+    public static final String ENABLE_SAML2_ECP = "enableSAML2ECP";
+    public static final String IDP_ENTITY_ID_ALIAS = "idpEntityIDAlias";
+
+    public static final String QUALIFIER_ID = ":urn:sp:qualifier:";
+
+    public static final String SLO_TYPE = "singleLogoutType";
 
     private SAMLSSOUIConstants() {
     }

@@ -20,6 +20,7 @@ package org.wso2.carbon.identity.sso.saml.util;
 
 import org.mockito.Mock;
 import org.opensaml.saml2.core.Issuer;
+import org.opensaml.saml2.core.Status;
 import org.powermock.core.classloader.annotations.PrepareForTest;
 import org.powermock.modules.testng.PowerMockObjectFactory;
 import org.powermock.modules.testng.PowerMockTestCase;
@@ -34,14 +35,22 @@ import org.wso2.carbon.identity.application.common.model.Property;
 import org.wso2.carbon.identity.application.common.util.IdentityApplicationConstants;
 import org.wso2.carbon.identity.application.common.util.IdentityApplicationManagementUtil;
 import org.wso2.carbon.identity.base.IdentityException;
+import org.wso2.carbon.identity.core.model.SAMLSSOServiceProviderDO;
+import org.wso2.carbon.identity.core.model.SAMLSSOServiceProviderDO;
+import org.wso2.carbon.identity.core.persistence.IdentityPersistenceManager;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.sso.saml.SAMLSSOConstants;
+import org.wso2.carbon.identity.sso.saml.SSOServiceProviderConfigManager;
 import org.wso2.carbon.identity.sso.saml.TestConstants;
 import org.wso2.carbon.identity.sso.saml.TestUtils;
 import org.wso2.carbon.identity.sso.saml.builders.X509CredentialImpl;
 import org.wso2.carbon.identity.sso.saml.exception.IdentitySAML2SSOException;
+import org.wso2.carbon.identity.sso.saml.extension.eidas.EidasExtensionProcessor;
+import org.wso2.carbon.identity.sso.saml.session.SSOSessionPersistenceManager;
+import org.wso2.carbon.identity.sso.saml.session.SessionInfoData;
 import org.wso2.carbon.idp.mgt.IdentityProviderManagementException;
 import org.wso2.carbon.idp.mgt.IdentityProviderManager;
+import org.wso2.carbon.registry.core.Registry;
 import org.wso2.carbon.user.api.UserStoreException;
 import org.wso2.carbon.user.core.service.RealmService;
 import org.wso2.carbon.user.core.tenant.TenantManager;
@@ -50,16 +59,24 @@ import org.wso2.carbon.utils.multitenancy.MultitenantConstants;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.mockito.Matchers.*;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
+import static org.mockito.Matchers.anyString;
+import static org.mockito.Matchers.eq;
 import static org.powermock.api.mockito.PowerMockito.mockStatic;
 import static org.powermock.api.mockito.PowerMockito.when;
-import static org.testng.Assert.*;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNotEquals;
+import static org.testng.Assert.assertNotNull;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 /**
  * Unit test cases for SAMLSSOUtil.
  */
 @PrepareForTest({IdentityProviderManager.class, IdentityUtil.class, IdentityApplicationManagementUtil.class,
-        KeyStoreManager.class})
+        KeyStoreManager.class,IdentityPersistenceManager.class,SSOServiceProviderConfigManager.class})
 public class SAMLSSOUtilTest extends PowerMockTestCase {
 
     @Mock
@@ -79,6 +96,14 @@ public class SAMLSSOUtilTest extends PowerMockTestCase {
 
     @Mock
     private FederatedAuthenticatorConfig federatedAuthenticatorConfig;
+
+    private SessionInfoData sessionInfoData;
+
+    @Mock
+    private IdentityPersistenceManager identityPersistenceManager;
+
+    @Mock
+    private SSOServiceProviderConfigManager ssoServiceProviderConfigManager;
 
     @ObjectFactory
     public IObjectFactory getObjectFactory() {
@@ -105,6 +130,24 @@ public class SAMLSSOUtilTest extends PowerMockTestCase {
         mockStatic(IdentityProviderManager.class);
         when(IdentityProviderManager.getInstance()).thenReturn(identityProviderManager);
         when(identityProviderManager.getResidentIdP(anyString())).thenReturn(identityProvider);
+    }
+
+    private void prepareForGetSPConfig() throws Exception {
+
+        SAMLSSOServiceProviderDO samlssoServiceProviderDO = new SAMLSSOServiceProviderDO();
+        samlssoServiceProviderDO.setIssuer(TestConstants.ISSUER_WITH_QUALIFIER);
+        samlssoServiceProviderDO.setIssuerQualifier(TestConstants.ISSUER_QUALIFIER);
+        samlssoServiceProviderDO.setIdpEntityIDAlias(TestConstants.IDP_ENTITY_ID_ALIAS);
+
+        when(identityPersistenceManager.getServiceProvider(any(Registry.class), anyString()))
+                .thenReturn(samlssoServiceProviderDO);
+        mockStatic(IdentityPersistenceManager.class);
+        when(IdentityPersistenceManager.getPersistanceManager()).thenReturn(identityPersistenceManager);
+        when(identityPersistenceManager.isServiceProviderExists(any(Registry.class), anyString())).thenReturn(true);
+
+        mockStatic(SSOServiceProviderConfigManager.class);
+        when(SSOServiceProviderConfigManager.getInstance()).thenReturn(ssoServiceProviderConfigManager);
+        when(ssoServiceProviderConfigManager.getServiceProvider(TestConstants.ISSUER_WITH_QUALIFIER)).thenReturn(samlssoServiceProviderDO);
     }
 
     @Test
@@ -303,4 +346,123 @@ public class SAMLSSOUtilTest extends PowerMockTestCase {
                 .WSO2_TENANT_DOMAIN, TestConstants.WSO2_CARBON);
     }
 
+    @Test
+    public void testAddExtensionProcessors() {
+        SAMLSSOUtil.addExtensionProcessors(new EidasExtensionProcessor());
+        assertEquals(SAMLSSOUtil.getExtensionProcessors().size(), 1, "Extension processor is not " +
+                "added to the extension processor list.");
+    }
+
+    @Test
+    public void testRemoveExtensionProcessors() {
+        SAMLSSOUtil.removeExtensionProcessors(new EidasExtensionProcessor());
+        assertEquals(SAMLSSOUtil.getExtensionProcessors().size(), 0, "Extension processor is not " +
+                "removed from the extension processor list.");
+    }
+
+    @Test
+    public void testBuildResponseStatus() {
+        String statusCode = "500";
+        String statusMsg = "Internal Server Error";
+        Status status = SAMLSSOUtil.buildResponseStatus(statusCode, statusMsg);
+        assertEquals(status.getStatusCode().getValue(), statusCode, "Status code is not properly set in the Status " +
+                "object.");
+        assertEquals(status.getStatusMessage().getMessage(), statusMsg, "Status Message is not properly set in " +
+                "the Status object.");
+    }
+
+    @Test
+    public void testisSAMLNotOnOrAfterPeriodDefined() {
+        assertEquals(SAMLSSOUtil.isSAMLNotOnOrAfterPeriodDefined(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_NUMERIC),
+                true, "Expected to return true for a numeric value.");
+        assertEquals(SAMLSSOUtil.isSAMLNotOnOrAfterPeriodDefined(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_ALPHA),
+                false, "Expected to false false for a alphabetic value.");
+        assertEquals(SAMLSSOUtil.isSAMLNotOnOrAfterPeriodDefined(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_ZERO),
+                false, "Expected to return false for a zero.");
+        assertEquals(SAMLSSOUtil.isSAMLNotOnOrAfterPeriodDefined(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_EMPTY),
+                false, "Expected to return false for a empty string.");
+        assertEquals(SAMLSSOUtil.isSAMLNotOnOrAfterPeriodDefined(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_WHITE_SPACE),
+                false, "Expected to return false for white space.");
+    }
+
+    @Test
+    public void testGetSAMLSessionNotOnOrAfterPeriod() {
+        assertEquals(SAMLSSOUtil.getSAMLSessionNotOnOrAfterPeriod(TestConstants.SAML_SESSION_NOT_ON_OR_AFTER_PERIOD_NUMERIC),
+                15 * 60, "Expected to return the default value defined in the constants.");
+    }
+
+    @Test(dataProvider = "remainingSessionParticipantsforSloData")
+    public void testGetRemainingSessionParticipantsForSLO(String sessionIndex, String issuer, boolean isIdPInitSLO,
+                                                          int expected) {
+
+        initializeData();
+        List<SAMLSSOServiceProviderDO> samlssoServiceProviderDOList =
+                SAMLSSOUtil.getRemainingSessionParticipantsForSLO(sessionIndex, issuer, isIdPInitSLO);
+        assertEquals(samlssoServiceProviderDOList.size(), expected);
+
+    }
+
+    @DataProvider(name = "remainingSessionParticipantsforSloData")
+    public Object[][] remainingSessionParticipantsforSloData() {
+
+        return new Object[][]{
+                {null, null, true, 0},
+                {null, "issuer", false, 0},
+                {"sessionIndex", null, false, 2},
+                {"sessionIndex", "issuer1", false, 1},
+                {"sessionIndex", "issuer1", true, 2}
+        };
+    }
+
+    public void initializeData() {
+
+        TestUtils.startTenantFlow(MultitenantConstants.SUPER_TENANT_DOMAIN_NAME);
+        SAMLSSOServiceProviderDO samlssoServiceProviderDO1 = new SAMLSSOServiceProviderDO();
+        samlssoServiceProviderDO1.setIssuer("issuer1");
+        samlssoServiceProviderDO1.setDoSingleLogout(true);
+
+        SAMLSSOServiceProviderDO samlssoServiceProviderDO2 = new SAMLSSOServiceProviderDO();
+        samlssoServiceProviderDO2.setIssuer("issuer2");
+        samlssoServiceProviderDO2.setDoSingleLogout(true);
+
+        SAMLSSOServiceProviderDO samlssoServiceProviderDO3 = new SAMLSSOServiceProviderDO();
+        samlssoServiceProviderDO3.setIssuer("issuer3");
+        samlssoServiceProviderDO3.setDoSingleLogout(false);
+
+        sessionInfoData = new SessionInfoData();
+        sessionInfoData.addServiceProvider("issuer1", samlssoServiceProviderDO1, null);
+        sessionInfoData.addServiceProvider("issuer2", samlssoServiceProviderDO2, null);
+        sessionInfoData.addServiceProvider("issuer3", samlssoServiceProviderDO3, null);
+
+        SSOSessionPersistenceManager.addSessionIndexToCache("samlssoTokenId", "sessionIndex");
+        SSOSessionPersistenceManager.addSessionInfoDataToCache("sessionIndex", sessionInfoData);
+    }
+
+    @Test
+    public void testGetSessionInfoData() {
+
+        initializeData();
+        assertEquals(SAMLSSOUtil.getSessionInfoData("sessionIndex"), sessionInfoData);
+        assertNotEquals(SAMLSSOUtil.getSessionInfoData("sessionIndex1"), sessionInfoData);
+    }
+
+    @Test
+    public void testGetSessionIndex() {
+
+        initializeData();
+        assertEquals(SAMLSSOUtil.getSessionIndex("samlssoTokenId"), "sessionIndex");
+        assertNull(SAMLSSOUtil.getSessionIndex("sessionId"), "Session Index is null.");
+    }
+
+
+    @Test
+    public void testGetIssuerWhenEntityIDAliasEnabled() throws Exception {
+
+        SAMLSSOUtil.setIssuerWithQualifierInThreadLocal(TestConstants.ISSUER_WITH_QUALIFIER);
+        prepareForGetIssuer();
+        prepareForGetSPConfig();
+        TestUtils.startTenantFlow(MultitenantConstants.SUPER_TENANT_DOMAIN_NAME);
+        Issuer issuer = SAMLSSOUtil.getIssuerFromTenantDomain(MultitenantConstants.SUPER_TENANT_DOMAIN_NAME);
+        assertEquals(issuer.getValue(), TestConstants.IDP_ENTITY_ID_ALIAS, "Issuer for specific service provider.");
+    }
 }

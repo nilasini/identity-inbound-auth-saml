@@ -77,6 +77,25 @@
                         "<fmt:message key='sp.entity.id.cannot.have.at'/>", null,
                         null);
                 return false;
+            } else if (value.includes("urn:sp:qualifier")) {
+                CARBON.showWarningDialog(
+                    "<fmt:message key='sp.entity.id.cannot.have.qualifier.id'/>", null,
+                    null);
+                return false;
+            }
+
+            var field = document.getElementsByName("issuerQualifier")[0];
+            var entityValue = field.value;
+            if (entityValue.indexOf("@") > -1) {
+                CARBON.showWarningDialog(
+                    "<fmt:message key='sp.qualifier.value.cannot.have.at'/>", null,
+                    null);
+                return false;
+            } else if (entityValue.includes("urn:sp:qualifier")) {
+                CARBON.showWarningDialog(
+                    "<fmt:message key='sp.qualifier.cannot.have.qualifier.id'/>", null,
+                    null);
+                return false;
             }
 
             var assertionConsumerURLs = null;
@@ -127,15 +146,25 @@
         }
 
 
-        function disableLogoutUrl(chkbx) {
+        function disableSingleLogout(chkbx) {
             if ($(chkbx).is(':checked')) {
+                if(!$("#enableFrontChannelHTTPRedirectBinding").is(':checked') && !$("#enableFrontChannelHTTPPostBinding").is(':checked')) {
+                    $("#enableBackChannelLogout").prop('checked',true);
+                }
                 $("#sloResponseURL").prop('disabled', false);
                 $("#sloRequestURL").prop('disabled', false);
+                $("#enableBackChannelLogout").prop('disabled',false);
+                $("#enableFrontChannelHTTPRedirectBinding").prop('disabled', false);
+                $("#enableFrontChannelHTTPPostBinding").prop('disabled', false);
             } else {
                 $("#sloResponseURL").prop('disabled', true);
                 $("#sloRequestURL").prop('disabled', true);
+                $("#enableBackChannelLogout").prop('disabled',true);
+                $("#enableFrontChannelHTTPRedirectBinding").prop('disabled', true);
+                $("#enableFrontChannelHTTPPostBinding").prop('disabled', true);
                 $("#sloResponseURL").val("");
                 $("#sloRequestURL").val("");
+                
             }
         }
 
@@ -174,6 +203,11 @@
             document.addServiceProvider.enableResponseSignature.value = (chkbx.checked) ? true
                     : false;
         }
+
+        function disableSamlECP(chkbx){
+            document.addServiceProvider.enableSAML2ECP.value = (chkbx.checked) ? true : false;
+        }
+
         function disableAssertionSignature(chkbx) {
             document.addServiceProvider.enableAssertionSignature.value = (chkbx.checked) ? true
                     : false;
@@ -207,6 +241,14 @@
             }
 
         }
+
+        function disableArtifactResolveSignatureValidation(chkbx) {
+            if (!chkbx.checked) {
+                document.addServiceProvider.enableSignatureValidationInArtifactResolve.checked = false;
+            }
+            document.addServiceProvider.enableSignatureValidationInArtifactResolve.disabled = (!chkbx.checked);
+        }
+
         function disableAudienceRestriction(chkbx) {
             document.addServiceProvider.audience.disabled = (chkbx.checked) ? false
                     : true;
@@ -654,6 +696,27 @@
         }
     %>
 
+    <script>
+        function downloadIDPMetadata() {
+            setMetadataProperties();
+            jQuery('#idp-mgt-get-IDP-form').submit();
+        }
+
+        function setMetadataProperties() {
+            var authReqSigned = 'false';
+            if (document.getElementById("enableSigValidation").checked) {
+                authReqSigned = 'true';
+            }
+            var samlAuthRequestSigned = document.getElementById("samlAuthRequestSigned");
+            samlAuthRequestSigned.value = authReqSigned;
+        }
+    </script>
+    <form id="idp-mgt-get-IDP-form" name="idp-mgt-get-IDP-form" method="post"
+          action="download_metadata_finish-ajaxprocessor.jsp">
+        <input type="hidden" id="samlAuthRequestSigned" name="samlAuthRequestSigned"
+               value=""/>
+    </form>
+
     <div id="middle">
         <h2>
             <fmt:message key="saml.sso.register.service.provider"/>
@@ -764,11 +827,33 @@
                                     </td>
                                     <td><input type="text" id="issuer" name="issuer" maxlength="100"
                                                class="text-box-big"
-                                               value="<%=isEditSP? Encode.forHtmlAttribute(provider.getIssuer()):""%>" <%=isEditSP ? "disabled=\"disabled\"" : ""%>/>
+                                               value="<%=isEditSP? Encode.forHtmlAttribute(SAMLSSOUIUtil.getIssuerWithoutQualifier(provider.getIssuer())):""%>"
+                                            <%=isEditSP ? "disabled=\"disabled\"" : ""%>/>
                                         <input type="hidden" id="hiddenIssuer" name="hiddenIssuer"
                                                value="<%=isEditSP? Encode.forHtmlAttribute(provider.getIssuer()):""%>"/>
                                     </td>
                                 </tr>
+                                <%
+                                    if (!isEditSP || (isEditSP && StringUtils.isNotEmpty(provider.getIssuerQualifier()))) { %>
+                                <tr>
+                                    <td style="width: 300px;"
+                                        + title="Qualifier to identify the service provider for the SAML Authentication Request">
+                                        <fmt:message key="sp.issuer.qualifier"/>
+                                    </td>
+                                    <td><input type="text" id="issuerQualifier" name="issuerQualifier"
+                                               maxlength="100"
+                                               class="text-box-big"
+                                               value="<%=isEditSP && provider.getIssuerQualifier() != null ?
+                                               Encode.forHtmlAttribute(provider.getIssuerQualifier()):""%>" <%=isEditSP ? "disabled=\"disabled\"" : ""%>/>
+                                        <input type="hidden" id="hiddenIssuerQualifier" name="hiddenIssuerQualifier"
+                                               value="<%=isEditSP && provider.getIssuerQualifier() != null ?
+                                               Encode.forHtmlAttribute(provider.getIssuerQualifier()):""%>"/>
+                                        <div class="sectionHelp">
+                                            <fmt:message key='sp.issuer.qualifier.help'/>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <%}%>
                                 <tr id="assertionConsumerURLInputRow">
                                     <td title="URL to which the browser should be redirected to after the authentication is successful">
                                         <fmt:message key="sp.assertionConsumerURLs"/>
@@ -1236,11 +1321,14 @@
                                     <td colspan="2" title="Enable Single Logout so that all sessions are terminated once the user signs out from one server">
                                     <input type="checkbox"
                                                            name="enableSingleLogout" value="true"
-                                                           onclick="disableLogoutUrl(this);"
-                                            <%= isSingleLogoutEnabled(isEditSP, provider) ? "checked" : ""%>/>
+                                                           onclick="disableSingleLogout(this);"
+                                            <%= isSingleLogoutEnabled(isEditSP, provider) ? "checked": ""%>
+                                    />
+                                        
                                         <fmt:message
                                                 key="enable.single.logout"/></td>
                                 </tr>
+                                <!-- Logout URLs-->
                                 <tr>
                                     <td
                                             style="padding-left: 40px ! important; color: rgb(119, 119, 119); font-style: italic;">
@@ -1249,7 +1337,8 @@
                                     <td><input type="text" id="sloResponseURL" name="sloResponseURL"
                                                value="<%=(isEditSP && StringUtils.isNotBlank(provider.getSloResponseURL())) ?
                Encode.forHtmlAttribute(provider.getSloResponseURL()) : ""%>"
-                                               class="text-box-big" <%=(isEditSP && provider.getDoSingleLogout()) ? "" : "disabled=\"disabled\""%>>
+                                               class="text-box-big" <%=isSingleLogoutEnabled(isEditSP, provider) ? "" : "disabled=\"disabled\""%>>
+            
                                         <div class="sectionHelp" style="margin-top: 2px;">
                                             Single logout response accepting endpoint
                                         </div>
@@ -1263,10 +1352,49 @@
                                     <td><input type="text" id="sloRequestURL" name="sloRequestURL"
                                                value="<%=(isEditSP && StringUtils.isNotBlank(provider.getSloRequestURL())) ?
                Encode.forHtmlAttribute(provider.getSloRequestURL()) : ""%>"
-                                               class="text-box-big" <%=(isEditSP && provider.getDoSingleLogout()) ? "" : "disabled=\"disabled\""%>>
+                                               class="text-box-big" <%=isSingleLogoutEnabled(isEditSP, provider) ? "" : "disabled=\"disabled\""%>>
                                         <div class="sectionHelp" style="margin-top: 2px;">
                                             Single logout request accepting endpoint
                                         </div>
+                                    </td>
+                                </tr>
+    
+                                <tr id="single_logout_type_row" name="single_logout_type_row">
+                                    <td style="padding-left: 40px ! important; color: rgb(119, 119, 119); font-style: italic;" class="leftCol-med"><fmt:message key='single.logout.type'/></td>
+                                    <td>
+                                        <table>
+                                            <!-- EnableBackChannelLogout-->
+                                            <tr>
+                                                <td><label><input type="radio" name="singleLogoutType"
+                                                                  id="enableBackChannelLogout" value="enableBackChannelLogout"
+                                                                  class="radio-button" <%=isSingleLogoutEnabled(isEditSP, provider) ? "" : "disabled=\"disabled\""%>
+                                                        <%= !isFrontChannelLogoutEnabled(isEditSP, provider) && isSingleLogoutEnabled(isEditSP, provider) ? "checked" : ""%>
+                                                />
+                                                    <fmt:message key="enable.back.channel.logout"/>
+                                                </label></td>
+                                            </tr>
+                                            <!-- EnableFrontChannelLogout-HTTPRedirectBinding-->
+                                            <tr>
+                                                <td><label>
+                                                    <input type="radio" id="enableFrontChannelHTTPRedirectBinding" name="singleLogoutType" value="HTTPRedirectBinding"
+                                                           class="radio-button" <%=isSingleLogoutEnabled(isEditSP, provider) ? "" : "disabled=\"disabled\""%>
+                                                            <%= isHTTPRedirectBindingEnabled(isEditSP, provider) ? "checked": ""%>
+                                                    />
+                                                    <fmt:message key="enable.front.channel.http.redirect.binding"/>
+                                                </label></td>
+                                            </tr>
+                                            <!-- EnableFrontChannelLogout-HTTPRPostBinding-->
+                                            <tr>
+                                                <td><label>
+                                                    <input type="radio" id="enableFrontChannelHTTPPostBinding" name="singleLogoutType" value="HTTPPostBinding"
+                                                           class="radio-button" <%=isSingleLogoutEnabled(isEditSP, provider)  ? "" : "disabled=\"disabled\""%>
+                                                            <%= isHTTPPostBindingEnabled(isEditSP, provider) ? "checked": ""%>
+                                                    />
+                                                    <fmt:message key="enable.front.channel.http.post.binding"/>
+                                                </label></td>
+                                            </tr>
+                                            
+                                        </table>
                                     </td>
                                 </tr>
                                 <!-- EnableAttributeProfile -->
@@ -1734,6 +1862,75 @@
                                 </tr>
                                 <%}%>
 
+                                <!-- Enable SAML2 Artifact Binding -->
+                                <tr>
+                                    <td colspan="2" title="Used for artifact binding following SAML2.0 specification">
+                                        <label>
+                                            <% if (isEditSP && provider.getEnableSAML2ArtifactBinding()) { %>
+                                            <input type="checkbox" id="enableSAML2ArtifactBinding"
+                                                   name="enableSAML2ArtifactBinding" value="true" checked="checked"
+                                                   onclick="disableArtifactResolveSignatureValidation(this);"/>
+                                            <% } else {%>
+                                            <input type="checkbox" id="enableSAML2ArtifactBinding"
+                                                   name="enableSAML2ArtifactBinding"
+                                                   onclick="disableArtifactResolveSignatureValidation(this);"/>
+                                            <% } %>
+                                            <fmt:message key='sp.enable.saml2.artifact.binding'/>
+                                        </label>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding-left: 40px ! important; color: rgb(119, 119, 119); font-style: italic;"
+                                        colspan="2">
+                                        <label>
+                                            <% if (isEditSP && provider.getDoValidateSignatureInArtifactResolve()) { %>
+                                            <input type="checkbox"
+                                                   name="enableSignatureValidationInArtifactResolve"
+                                                   id="enableSignatureValidationInArtifactResolve"
+                                                   checked="checked" value="true"/>
+                                            <% } else if (isEditSP && provider.getEnableSAML2ArtifactBinding()) { %>
+                                            <input type="checkbox"
+                                                   name="enableSignatureValidationInArtifactResolve"
+                                                   id="enableSignatureValidationInArtifactResolve"/>
+                                            <% } else { %>
+                                            <input type="checkbox" disabled
+                                                   name="enableSignatureValidationInArtifactResolve"
+                                                   id="enableSignatureValidationInArtifactResolve"/>
+                                            <% } %>
+                                            <fmt:message key="sp.enable.signature.validation.artifact.resolve"/>
+                                        </label>
+                                    </td>
+                                </tr>
+                                <tr style="display:none;">
+                                    <td colspan="2" title="Select the ECP checkbox to enable this functionality. When this is enabled, the ECP can send Authentication Requests to the IDP">
+                                        <input type="checkbox" name="enableSAML2ECP" value="true"
+                                               onclick="disableSamlECP(this);"
+                                                <%=(isSamlECPEnabled(isEditSP, provider) ? "checked" : "")%> />
+                                        <fmt:message key="enable.saml2.ecp"/>
+                                    </td>
+                                </tr>
+    
+                                <!-- IdP Entity ID Alias-->
+                                <tr>
+                                    <td title="Defines an aliad value to override IdP Entity ID of resident IdP">
+                                        <fmt:message key="idp.entity.id.alias"/>
+                                    </td>
+                                    <td><input type="text" id="idpEntityIDAlias" name="idpEntityIDAlias"
+                                               value="<%=(isEditSP && StringUtils.isNotBlank(provider.getIdpEntityIDAlias())) ?
+                                               Encode.forHtmlAttribute(provider.getIdpEntityIDAlias()) : ""%>"/>
+                                        <div class="sectionHelp" style="margin-top: 2px;">
+                                            <fmt:message key="enable.idp.entity.id.alias.help"/>
+                                        </div>
+                                    </td>
+                                </tr>
+
+                                <!-- IDP Metadata Download button, ***This should be at the bottom of this table -->
+                                <tr>
+                                    <td>
+                                        <input class="button" type="button" onclick="downloadIDPMetadata()"
+                                               value="<fmt:message key="saml.sso.download.metadata"/>"/>
+                                    </td>
+                                </tr>
                             </table>
                         </td>
                     </tr>

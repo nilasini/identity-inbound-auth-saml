@@ -18,25 +18,46 @@
 
 package org.wso2.carbon.identity.sso.saml;
 
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+import org.opensaml.Configuration;
 import org.opensaml.saml2.core.Assertion;
 import org.opensaml.saml2.core.EncryptedAssertion;
 import org.opensaml.saml2.encryption.Decrypter;
+import org.opensaml.xml.XMLObject;
 import org.opensaml.xml.encryption.DecryptionException;
 import org.opensaml.xml.encryption.EncryptedKey;
+import org.opensaml.xml.io.Unmarshaller;
+import org.opensaml.xml.io.UnmarshallerFactory;
 import org.opensaml.xml.security.SecurityHelper;
 import org.opensaml.xml.security.credential.Credential;
 import org.opensaml.xml.security.keyinfo.KeyInfoCredentialResolver;
 import org.opensaml.xml.security.keyinfo.StaticKeyInfoCredentialResolver;
 import org.opensaml.xml.security.x509.X509Credential;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
 import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
 import org.wso2.carbon.identity.application.common.model.Claim;
 import org.wso2.carbon.identity.application.common.model.ClaimMapping;
+import org.wso2.carbon.identity.core.util.IdentityUtil;
 import org.wso2.carbon.identity.sso.saml.dto.SAMLSSOAuthnReqDTO;
+import org.wso2.carbon.identity.sso.saml.exception.IdentitySAML2SSOException;
 
 import javax.crypto.SecretKey;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.soap.SOAPMessage;
+import javax.xml.soap.MessageFactory;
+import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.security.KeyStore;
 import java.security.KeyStoreException;
@@ -52,6 +73,8 @@ import java.util.Map;
 import static org.powermock.api.mockito.PowerMockito.when;
 
 public class TestUtils {
+
+    private static final Log log = LogFactory.getLog(TestUtils.class);
 
     public static KeyStore loadKeyStoreFromFileSystem(String keyStorePath, String password, String type) {
 
@@ -143,5 +166,71 @@ public class TestUtils {
         }
         authnReqDTO.getUser().setUserAttributes(userAttributes);
         return authnReqDTO;
+    }
+
+    /**
+     * Unmarshalls an element file into its SAMLObject.
+     *
+     * @param elementFile the classpath path to an XML document to unmarshall
+     *
+     * @return the SAMLObject from the file
+     */
+    public static XMLObject unmarshallElement(String elementFile) throws IdentitySAML2SSOException {
+
+        InputStream inputStream = null;
+        try {
+            File file = new File(elementFile);
+            String str = FileUtils.readFileToString(file, "UTF-8");
+            DocumentBuilderFactory documentBuilderFactory = IdentityUtil.getSecuredDocumentBuilderFactory();
+            DocumentBuilder docBuilder = documentBuilderFactory.newDocumentBuilder();
+            inputStream = new ByteArrayInputStream(str.trim().getBytes(StandardCharsets.UTF_8));
+            Document document = docBuilder.parse(inputStream);
+            Element element = document.getDocumentElement();
+            UnmarshallerFactory unmarshallerFactory = Configuration.getUnmarshallerFactory();
+            Unmarshaller unmarshaller = unmarshallerFactory.getUnmarshaller(element);
+            return unmarshaller.unmarshall(element);
+        } catch (Exception e) {
+            throw new IdentitySAML2SSOException(
+                    "Error in constructing XMLObject from the String ",
+                    e);
+        } finally {
+            if (inputStream != null) {
+                try {
+                    inputStream.close();
+                } catch (IOException e) {
+                    log.error("Error while closing the stream", e);
+                }
+            }
+        }
+    }
+
+    public static PrivateKey getPrivateKey(KeyStore keyStore,String alias,String password)
+            throws KeyStoreException,NoSuchAlgorithmException,UnrecoverableKeyException{
+
+        return (PrivateKey) keyStore.getKey(alias,password.toCharArray());
+    }
+
+    public static Certificate getCertificate(KeyStore keyStore,String alias) throws KeyStoreException{
+
+        return keyStore.getCertificate(alias);
+    }
+
+    public static SOAPMessage getSOAPBindedSAMLAuthnRequest(){
+        SOAPMessage soapMessage=  null;
+        String stringMsg = "<S:Envelope xmlns:S=\"http://schemas.xmlsoap.org/soap/envelope/\"><S:Body><samlp:AuthnRequest " +
+                "xmlns:samlp=\"urn:oasis:names:tc:SAML:2.0:protocol\" AssertionConsumerServiceURL=\"https://localhost/Shib" +
+                "boleth.sso/SAML2/ECP\" ID=\"_ec1025e786e6fff206ef63909029202a\" IssueInstant=\"2018-10-22T11:41:10Z\" Pro" +
+                "tocolBinding=\"urn:oasis:names:tc:SAML:2.0:bindings:PAOS\" Version=\"2.0\"><saml:Issuer xmlns:saml=\"urn:" +
+                "oasis:names:tc:SAML:2.0:assertion\">https://localhost/shibboleth</saml:Issuer><samlp:NameIDPolicy AllowCr" +
+                "eate=\"1\"/><samlp:Scoping><samlp:IDPList><samlp:IDPEntry ProviderID=\"https://idp.is.com\"/></samlp:IDPL" +
+                "ist></samlp:Scoping></samlp:AuthnRequest></S:Body></S:Envelope>";
+        try {
+            InputStream is = new ByteArrayInputStream(stringMsg.getBytes(Charset.forName("UTF-8")));
+            soapMessage = MessageFactory.newInstance().createMessage(null, is);
+        } catch (Exception e){
+            log.error("Error Creating the SOAP message");
+        }
+        return soapMessage;
+
     }
 }

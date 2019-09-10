@@ -20,6 +20,7 @@ package org.wso2.carbon.identity.sso.saml.internal;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.eclipse.equinox.http.helper.ContextPathServletAdaptor;
+import org.osgi.framework.ServiceRegistration;
 import org.osgi.service.component.ComponentContext;
 import org.osgi.service.component.annotations.Activate;
 import org.osgi.service.component.annotations.Component;
@@ -30,13 +31,21 @@ import org.osgi.service.component.annotations.ReferencePolicy;
 import org.osgi.service.http.HttpService;
 import org.wso2.carbon.base.api.ServerConfigurationService;
 import org.wso2.carbon.identity.application.mgt.ApplicationManagementService;
+import org.wso2.carbon.identity.application.mgt.listener.ApplicationMgtListener;
 import org.wso2.carbon.identity.base.IdentityConstants;
 import org.wso2.carbon.identity.core.util.IdentityCoreInitializedEvent;
 import org.wso2.carbon.identity.core.util.IdentityIOStreamUtils;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
+import org.wso2.carbon.identity.event.handler.AbstractEventHandler;
+import org.wso2.carbon.identity.sso.saml.SAMLECPConstants;
+import org.wso2.carbon.identity.sso.saml.SAMLLogoutHandler;
 import org.wso2.carbon.identity.sso.saml.SAMLSSOConstants;
 import org.wso2.carbon.identity.sso.saml.SSOServiceProviderConfigManager;
 import org.wso2.carbon.identity.sso.saml.admin.FileBasedConfigManager;
+import org.wso2.carbon.identity.sso.saml.extension.SAMLExtensionProcessor;
+import org.wso2.carbon.identity.sso.saml.extension.eidas.EidasExtensionProcessor;
+import org.wso2.carbon.identity.sso.saml.servlet.SAMLArtifactResolveServlet;
+import org.wso2.carbon.identity.sso.saml.servlet.SAMLECPProviderServlet;
 import org.wso2.carbon.identity.sso.saml.servlet.SAMLSSOProviderServlet;
 import org.wso2.carbon.identity.sso.saml.util.SAMLSSOUtil;
 import org.wso2.carbon.registry.core.service.RegistryService;
@@ -54,11 +63,11 @@ import javax.servlet.Servlet;
  * Service component class for the SAML SSO service.
  */
 @Component(
-         name = "identity.sso.saml.component", 
+         name = "identity.sso.saml.component",
          immediate = true)
 public class IdentitySAMLSSOServiceComponent {
 
-    private static Log log = LogFactory.getLog(IdentitySAMLSSOServiceComponent.class);
+    private static final Log log = LogFactory.getLog(IdentitySAMLSSOServiceComponent.class);
     private static int defaultSingleLogoutRetryCount = 5;
 
     private static ServerConfigurationService serverConfigurationService = null;
@@ -86,6 +95,15 @@ public class IdentitySAMLSSOServiceComponent {
             log.error(errMsg, e);
             throw new RuntimeException(errMsg, e);
         }
+        // Register SAML artifact resolve servlet
+        Servlet samlArtifactResolveServlet = new ContextPathServletAdaptor(new SAMLArtifactResolveServlet(),
+                SAMLSSOConstants.SAML_ARTIFACT_RESOLVE_URL);
+        try {
+            httpService.registerServlet(SAMLSSOConstants.SAML_ARTIFACT_RESOLVE_URL, samlArtifactResolveServlet,
+                    null, null);
+        } catch (Exception e) {
+            throw new RuntimeException("Error when registering SAML Artifact Resolve Servlet via the HttpService.", e);
+        }
 
         // Register a SSOServiceProviderConfigManager object as an OSGi Service
         ctxt.getBundleContext().registerService(SSOServiceProviderConfigManager.class.getName(),
@@ -102,7 +120,7 @@ public class IdentitySAMLSSOServiceComponent {
             SAMLSSOUtil.setResponseBuilder(IdentityUtil.getProperty("SSOService.SAMLSSOResponseBuilder"));
             SAMLSSOUtil.setIdPInitSSOAuthnRequestValidator(IdentityUtil.getProperty("SSOService.IdPInitSSOAuthnRequestValidator"));
             SAMLSSOUtil.setSPInitSSOAuthnRequestProcessor(IdentityUtil.getProperty("SSOService.SPInitSSOAuthnRequestProcessor"));
-            SAMLSSOUtil.setSPInitLogoutRequestProcessor(IdentityUtil.getProperty("SSOService.SPInitSSOAuthnRequestProcessor"));
+            SAMLSSOUtil.setSPInitLogoutRequestProcessor(IdentityUtil.getProperty("SSOService.SPInitLogoutRequestProcessor"));
             SAMLSSOUtil.setIdPInitLogoutRequestProcessor(IdentityUtil.getProperty("SSOService.IdPInitLogoutRequestProcessor"));
             SAMLSSOUtil.setIdPInitSSOAuthnRequestProcessor(IdentityUtil.getProperty("SSOService.IdPInitSSOAuthnRequestProcessor"));
 
@@ -134,6 +152,23 @@ public class IdentitySAMLSSOServiceComponent {
 
             FileBasedConfigManager.getInstance().addServiceProviders();
 
+            // Register EidasExtensionProcessor as an OSGi Service
+            ctxt.getBundleContext().registerService(SAMLExtensionProcessor.class.getName(),
+                    new EidasExtensionProcessor(), null);
+
+            ServiceRegistration oauthApplicationMgtListener = ctxt.getBundleContext()
+                    .registerService(ApplicationMgtListener.class.getName(), new SAMLApplicationMgtListener(), null);
+            if (oauthApplicationMgtListener != null) {
+                if (log.isDebugEnabled()) {
+                    log.debug("SAML - ApplicationMgtListener registered.");
+                }
+            } else {
+                log.error("SAML - ApplicationMgtListener could not be registered.");
+            }
+
+            ctxt.getBundleContext().registerService(AbstractEventHandler.class.getName(),
+                    new SAMLLogoutHandler(), null);
+
             if (log.isDebugEnabled()) {
                 log.debug("Identity SAML SSO bundle is activated");
             }
@@ -152,6 +187,7 @@ public class IdentitySAMLSSOServiceComponent {
         } finally {
             IdentityIOStreamUtils.closeInputStream(fis);
         }
+
     }
 
     @Deactivate
@@ -323,4 +359,38 @@ public class IdentitySAMLSSOServiceComponent {
         /* reference IdentityCoreInitializedEvent service to guarantee that this component will wait until identity core
          is started */
     }
+
+    /**
+     * Set SAML Extension Processors
+     *
+     * @param extensionProcessor Extension Processor
+     */
+    @Reference(
+            name = "saml.extension.processor",
+            service = SAMLExtensionProcessor.class,
+            cardinality = ReferenceCardinality.MULTIPLE,
+            policy = ReferencePolicy.DYNAMIC,
+            unbind = "unsetExtensionProcessor"
+    )
+    protected void setExtensionProcessor(SAMLExtensionProcessor extensionProcessor) {
+
+        if (log.isDebugEnabled()) {
+            log.debug("Extension Processor: " + extensionProcessor.getClass() + " set in SAML SSO bundle");
+        }
+        SAMLSSOUtil.addExtensionProcessors(extensionProcessor);
+    }
+
+    /**
+     * Unset SAML Extension Processors
+     *
+     * @param extensionProcessor Extension Processor
+     */
+    protected void unsetExtensionProcessor(SAMLExtensionProcessor extensionProcessor) {
+
+        if (log.isDebugEnabled()) {
+            log.debug("Extension Processor: " + extensionProcessor.getClass() + " unset in SAML SSO bundle");
+        }
+        SAMLSSOUtil.removeExtensionProcessors(extensionProcessor);
+    }
+
 }

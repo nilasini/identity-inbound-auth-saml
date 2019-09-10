@@ -17,14 +17,15 @@
  */
 package org.wso2.carbon.identity.sso.saml.util;
 
+import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.xerces.impl.Constants;
 import org.joda.time.DateTime;
 import org.opensaml.Configuration;
 import org.opensaml.DefaultBootstrap;
 import org.opensaml.common.impl.SecureRandomIdentifierGenerator;
+import org.opensaml.saml2.core.ArtifactResponse;
 import org.opensaml.saml2.core.Assertion;
 import org.opensaml.saml2.core.AuthnRequest;
 import org.opensaml.saml2.core.EncryptedAssertion;
@@ -33,7 +34,13 @@ import org.opensaml.saml2.core.LogoutRequest;
 import org.opensaml.saml2.core.LogoutResponse;
 import org.opensaml.saml2.core.RequestAbstractType;
 import org.opensaml.saml2.core.Response;
+import org.opensaml.saml2.core.Status;
+import org.opensaml.saml2.core.StatusCode;
+import org.opensaml.saml2.core.StatusMessage;
 import org.opensaml.saml2.core.impl.IssuerBuilder;
+import org.opensaml.saml2.core.impl.StatusBuilder;
+import org.opensaml.saml2.core.impl.StatusCodeBuilder;
+import org.opensaml.saml2.core.impl.StatusMessageBuilder;
 import org.opensaml.xml.ConfigurationException;
 import org.opensaml.xml.XMLObject;
 import org.opensaml.xml.io.Marshaller;
@@ -41,6 +48,7 @@ import org.opensaml.xml.io.MarshallerFactory;
 import org.opensaml.xml.io.Unmarshaller;
 import org.opensaml.xml.io.UnmarshallerFactory;
 import org.opensaml.xml.security.SecurityException;
+import org.opensaml.xml.security.SigningUtil;
 import org.opensaml.xml.security.x509.X509Credential;
 import org.opensaml.xml.signature.SignableXMLObject;
 import org.opensaml.xml.util.Base64;
@@ -64,12 +72,11 @@ import org.wso2.carbon.identity.application.common.util.IdentityApplicationManag
 import org.wso2.carbon.identity.application.mgt.ApplicationManagementService;
 import org.wso2.carbon.identity.base.IdentityConstants;
 import org.wso2.carbon.identity.base.IdentityException;
-
+import org.wso2.carbon.identity.core.IdentityRegistryResources;
 import org.wso2.carbon.identity.core.model.SAMLSSOServiceProviderDO;
 import org.wso2.carbon.identity.core.persistence.IdentityPersistenceManager;
 import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
 import org.wso2.carbon.identity.core.util.IdentityUtil;
-
 import org.wso2.carbon.identity.sso.saml.SAMLSSOConstants;
 import org.wso2.carbon.identity.sso.saml.SSOServiceProviderConfigManager;
 import org.wso2.carbon.identity.sso.saml.builders.DefaultResponseBuilder;
@@ -85,11 +92,13 @@ import org.wso2.carbon.identity.sso.saml.dto.QueryParamDTO;
 import org.wso2.carbon.identity.sso.saml.dto.SAMLSSOAuthnReqDTO;
 import org.wso2.carbon.identity.sso.saml.dto.SingleLogoutRequestDTO;
 import org.wso2.carbon.identity.sso.saml.exception.IdentitySAML2SSOException;
+import org.wso2.carbon.identity.sso.saml.extension.SAMLExtensionProcessor;
 import org.wso2.carbon.identity.sso.saml.processors.IdPInitLogoutRequestProcessor;
 import org.wso2.carbon.identity.sso.saml.processors.IdPInitSSOAuthnRequestProcessor;
 import org.wso2.carbon.identity.sso.saml.processors.SPInitLogoutRequestProcessor;
 import org.wso2.carbon.identity.sso.saml.processors.SPInitSSOAuthnRequestProcessor;
 import org.wso2.carbon.identity.sso.saml.session.SSOSessionPersistenceManager;
+import org.wso2.carbon.identity.sso.saml.session.SessionInfoData;
 import org.wso2.carbon.identity.sso.saml.validators.IdPInitSSOAuthnRequestValidator;
 import org.wso2.carbon.identity.sso.saml.validators.SAML2HTTPRedirectSignatureValidator;
 import org.wso2.carbon.identity.sso.saml.validators.SPInitSSOAuthnRequestValidator;
@@ -97,6 +106,7 @@ import org.wso2.carbon.identity.sso.saml.validators.SSOAuthnRequestValidator;
 import org.wso2.carbon.idp.mgt.IdentityProviderManagementException;
 import org.wso2.carbon.idp.mgt.IdentityProviderManager;
 import org.wso2.carbon.registry.core.Registry;
+import org.wso2.carbon.registry.core.exceptions.RegistryException;
 import org.wso2.carbon.registry.core.service.RegistryService;
 import org.wso2.carbon.registry.core.service.TenantRegistryLoader;
 import org.wso2.carbon.user.api.UserStoreException;
@@ -118,14 +128,17 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -137,21 +150,17 @@ import java.util.zip.InflaterInputStream;
 
 public class SAMLSSOUtil {
 
-    private static final char[] charMapping = {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
-            'k', 'l', 'm', 'n', 'o', 'p'};
+    private static final Log log = LogFactory.getLog(SAMLSSOUtil.class);
     private static final Set<Character> UNRESERVED_CHARACTERS = new HashSet<>();
     private static final ThreadLocal<Boolean> isSaaSApplication = new ThreadLocal<>();
     private static final ThreadLocal<String> userTenantDomainThreadLocal = new ThreadLocal<>();
     private static final String DefaultAssertionBuilder = "org.wso2.carbon.identity.sso.saml.builders.assertion.DefaultSAMLAssertionBuilder";
-    private static final String SECURITY_MANAGER_PROPERTY = Constants.XERCES_PROPERTY_PREFIX +
-            Constants.SECURITY_MANAGER_PROPERTY;
-    private static final int ENTITY_EXPANSION_LIMIT = 0;
 
     static {
         for (char c = 'a'; c <= 'z'; c++)
             UNRESERVED_CHARACTERS.add(Character.valueOf(c));
 
-        for (char c = 'A'; c <= 'A'; c++)
+        for (char c = 'A'; c <= 'Z'; c++)
             UNRESERVED_CHARACTERS.add(Character.valueOf(c));
 
         for (char c = '0'; c <= '9'; c++)
@@ -163,7 +172,6 @@ public class SAMLSSOUtil {
         UNRESERVED_CHARACTERS.add(Character.valueOf('~'));
     }
 
-    private static Log log = LogFactory.getLog(SAMLSSOUtil.class);
     private static RegistryService registryService;
     private static TenantRegistryLoader tenantRegistryLoader;
     private static BundleContext bundleContext;
@@ -181,21 +189,20 @@ public class SAMLSSOUtil {
     private static String sPInitSSOAuthnRequestValidatorClassName = null;
     private static String iDPInitSSOAuthnRequestValidatorClassName = null;
     private static ThreadLocal tenantDomainInThreadLocal = new ThreadLocal();
+    private static ThreadLocal issuerWithQualifierInThreadLocal = new ThreadLocal();
+    private static String issuerQualifier = null;
     private static String idPInitLogoutRequestProcessorClassName = null;
-    private static String idPInitSSOAuthnRequestProcessorClassName = null;
     private static String sPInitSSOAuthnRequestProcessorClassName = null;
     private static String sPInitLogoutRequestProcessorClassName = null;
+    private static Boolean spCertificateExpiryValidationEnabled;
+    private static int samlAuthenticationRequestValidityPeriod = 5*60;
     private static ApplicationManagementService applicationMgtService;
+    private static volatile List<SAMLExtensionProcessor> extensionProcessors;
 
     private SAMLSSOUtil() {
     }
 
     public static boolean isSaaSApplication() {
-
-        if (isSaaSApplication == null) {
-            // this is the default behavior.
-            return true;
-        }
 
         Boolean value = isSaaSApplication.get();
 
@@ -204,6 +211,39 @@ public class SAMLSSOUtil {
         }
 
         return false;
+    }
+
+    /**
+     * Check whether certificate expiration enabled
+     * @return
+     */
+    public static boolean isSpCertificateExpiryValidationEnabled() {
+
+        spCertificateExpiryValidationEnabled = Boolean.parseBoolean(IdentityUtil.getProperty(
+                SAMLSSOConstants.SAML_SP_CERTIFICATE_EXPIRY_VALIDATION_ENABLED));
+        return spCertificateExpiryValidationEnabled;
+    }
+
+    /**
+     * Check whether SAML Authentication request validity period enabled
+     * @return
+     */
+    public static boolean isSAMLAuthenticationRequestValidityPeriodEnabled() {
+        return Boolean.parseBoolean(IdentityUtil.getProperty(SAMLSSOConstants
+                .SAML2_AUTHENTICATION_REQUEST_VALIDITY_PERIOD_ENABLED));
+    }
+
+    /**
+     * Get the configured SAML request validity period
+     * @return
+     */
+    public static int getSAMLAuthenticationRequestValidityPeriod() {
+
+        if (IdentityUtil.getProperty(SAMLSSOConstants.SAML2_AUTHENTICATION_REQUEST_VALIDITY_PERIOD) != null) {
+           samlAuthenticationRequestValidityPeriod = Integer.parseInt(IdentityUtil.getProperty(
+                   SAMLSSOConstants.SAML2_AUTHENTICATION_REQUEST_VALIDITY_PERIOD));
+        }
+        return samlAuthenticationRequestValidityPeriod;
     }
 
     public static void setIsSaaSApplication(boolean isSaaSApp) {
@@ -215,11 +255,6 @@ public class SAMLSSOUtil {
     }
 
     public static String getUserTenantDomain() {
-
-        if (userTenantDomainThreadLocal == null) {
-            // this is the default behavior.
-            return null;
-        }
 
         return userTenantDomainThreadLocal.get();
     }
@@ -292,6 +327,46 @@ public class SAMLSSOUtil {
 
     public static void setHttpService(HttpService httpService) {
         SAMLSSOUtil.httpService = httpService;
+    }
+
+    /**
+     * Get extension processors.
+     *
+     * @return list of extension processors
+     */
+    public static List<SAMLExtensionProcessor> getExtensionProcessors() {
+        return extensionProcessors;
+    }
+
+    /**
+     * Add extension processors.
+     *
+     * @param extensionProcessor Extension processor
+     */
+    public static void addExtensionProcessors(SAMLExtensionProcessor extensionProcessor) {
+        if (SAMLSSOUtil.extensionProcessors == null) {
+            SAMLSSOUtil.extensionProcessors = new ArrayList<>();
+            SAMLSSOUtil.extensionProcessors.add(extensionProcessor);
+        } else {
+            SAMLSSOUtil.extensionProcessors.add(extensionProcessor);
+        }
+    }
+
+    /**
+     * Remove extension processor.
+     *
+     * @param extensionProcessor Extension processor
+     */
+    public static void removeExtensionProcessors(SAMLExtensionProcessor extensionProcessor) {
+
+        if (SAMLSSOUtil.extensionProcessors != null) {
+            Iterator<SAMLExtensionProcessor> iterator = extensionProcessors.iterator();
+            while (iterator.hasNext()) {
+                if (iterator.next().getClass().equals(extensionProcessor.getClass())) {
+                    iterator.remove();
+                }
+            }
+        }
     }
 
     /**
@@ -436,7 +511,6 @@ public class SAMLSSOUtil {
 
     }
 
-
     public static String decodeForPost(String encodedStr)
             throws IdentityException {
         try {
@@ -468,6 +542,12 @@ public class SAMLSSOUtil {
     }
 
     public static Issuer getIssuerFromTenantDomain(String tenantDomain) throws IdentityException {
+
+        // If an Entity ID Alias is provided, that is returned as the issuer.
+        Issuer entityIDAliasFromSP = getEntityIDAliasFromSP(tenantDomain);
+        if (entityIDAliasFromSP != null) {
+            return entityIDAliasFromSP;
+        }
 
         Issuer issuer = new IssuerBuilder().buildObject();
         String idPEntityId = null;
@@ -511,6 +591,29 @@ public class SAMLSSOUtil {
         issuer.setValue(idPEntityId);
         issuer.setFormat(SAMLSSOConstants.NAME_ID_POLICY_ENTITY);
         return issuer;
+    }
+
+    /**
+     * Override Issuer value with IdPEntityIDAlias
+     *
+     * @param tenantDomain
+     * @return issuer with its value set to IdP Entity ID Alias
+     * @throws IdentityException
+     */
+    private static Issuer getEntityIDAliasFromSP(String tenantDomain) throws IdentityException {
+
+        String currentSP = getIssuerWithQualifierInThreadLocal();
+        if (StringUtils.isEmpty(currentSP)) {
+            return null;
+        }
+        SAMLSSOServiceProviderDO sp = getSPConfig(tenantDomain, currentSP);
+        if (sp != null && StringUtils.isNotBlank(sp.getIdpEntityIDAlias())) {
+            Issuer issuer = new IssuerBuilder().buildObject();
+            issuer.setValue(sp.getIdpEntityIDAlias());
+            issuer.setFormat(SAMLSSOConstants.NAME_ID_POLICY_ENTITY);
+            return issuer;
+        }
+        return null;
     }
 
     /**
@@ -623,6 +726,22 @@ public class SAMLSSOUtil {
     }
 
     /**
+     * Sign SAML2 Artifact Response.
+     *
+     * @param request            ArtifactResponse object to be signed.
+     * @param signatureAlgorithm Signature algorithm.
+     * @param digestAlgorithm    Digest algorithm.
+     * @param cred               X509 Credential.
+     * @return Signed Artifact Response object.
+     * @throws IdentityException
+     */
+    public static ArtifactResponse setSignature(ArtifactResponse request, String signatureAlgorithm, String
+            digestAlgorithm, X509Credential cred) throws IdentityException {
+
+        return (ArtifactResponse) doSetSignature(request, signatureAlgorithm, digestAlgorithm, cred);
+    }
+
+    /**
      * Generic method to sign SAML Logout Request
      *
      * @param request
@@ -717,7 +836,7 @@ public class SAMLSSOUtil {
                                                String sessionId) throws IdentityException {
 
         doBootstrap();
-        String assertionBuilderClass = null;
+        String assertionBuilderClass;
         try {
             assertionBuilderClass = IdentityUtil.getProperty("SSOService.SAMLSSOAssertionBuilder").trim();
             if (StringUtils.isBlank(assertionBuilderClass)) {
@@ -848,6 +967,21 @@ public class SAMLSSOUtil {
         }
         String alias = authnReqDTO.getCertAlias();
         RequestAbstractType request = null;
+
+        // Check whether certificate is expired or not before the signature validation
+        try {
+            SAMLSSOServiceProviderDO serviceProviderConfigs = getServiceProviderConfig(domainName,
+                    authnReqDTO.getIssuer());
+            // Check whether certificate is expired or not before the signature validation.
+            if (isSpCertificateExpiryValidationEnabled()) {
+                if (isCertificateExpired(serviceProviderConfigs.getX509Certificate())) return false;
+            }
+        } catch (IdentityException e) {
+            log.error("A Service Provider with the Issuer '" + authnReqDTO.getIssuer()+ "' is not " +
+                    "registered. Service Provider should be registered in advance.");
+            return false;
+        }
+
         try {
             String decodedReq = null;
 
@@ -960,7 +1094,7 @@ public class SAMLSSOUtil {
     }
 
     /**
-     * Validates the signature of the LogoutRequest message against the given certificate.
+     * Validate the signature of the LogoutRequest message against the given certificate.
      * @param logoutRequest The logout request object if available.
      * @param queryString The request query string if available.
      * @param certificate The certificate which is used for signature validation.
@@ -1213,7 +1347,7 @@ public class SAMLSSOUtil {
                 if (StringUtils.isNotBlank(spDO.getAttributeConsumingServiceIndex()) && spDO
                         .isEnableAttributesByDefault()) {
                     index = Integer.parseInt(spDO.getAttributeConsumingServiceIndex());
-                } else {
+                } else if (CollectionUtils.isEmpty(authnReqDTO.getRequestedAttributes())) {
                     return Collections.emptyMap();
                 }
             } else {
@@ -1230,14 +1364,15 @@ public class SAMLSSOUtil {
 
         }
 
-		
+
 		/*
          * IMPORTANT : checking if the consumer index in the request matches the
 		 * given id to the SP
 		 */
-        if (spDO.getAttributeConsumingServiceIndex() == null ||
-                "".equals(spDO.getAttributeConsumingServiceIndex()) ||
-                index != Integer.parseInt(spDO.getAttributeConsumingServiceIndex())) {
+        if (((spDO.getAttributeConsumingServiceIndex() == null ||
+                "".equals(spDO.getAttributeConsumingServiceIndex())) &&
+                CollectionUtils.isEmpty(authnReqDTO.getRequestedAttributes())) ||
+                (index !=0 && index != Integer.parseInt(spDO.getAttributeConsumingServiceIndex()))) {
             if (log.isDebugEnabled()) {
                 log.debug("Invalid AttributeConsumingServiceIndex in AuthnRequest");
             }
@@ -1298,6 +1433,19 @@ public class SAMLSSOUtil {
         }
     }
 
+    /**
+     * Return validity period for SAML2 artifacts defined in identity.xml file.
+     * @return Validity period in minutes.
+     */
+    public static int getSAML2ArtifactValidityPeriod() {
+        if (StringUtils.isNotBlank(IdentityUtil.getProperty(IdentityConstants.ServerConfig.SAML2_ARTIFACT_VALIDITY_PERIOD))) {
+            return Integer.parseInt(IdentityUtil.getProperty(
+                    IdentityConstants.ServerConfig.SAML2_ARTIFACT_VALIDITY_PERIOD).trim());
+        } else {
+            return 5;
+        }
+    }
+
     public static int getSingleLogoutRetryCount() {
         return singleLogoutRetryCount;
     }
@@ -1326,11 +1474,7 @@ public class SAMLSSOUtil {
                         .loadClass(responseBuilderClassName);
                 return (ResponseBuilder) clazz.newInstance();
 
-            } catch (ClassNotFoundException e) {
-                log.error("Error while instantiating the SAMLResponseBuilder ", e);
-            } catch (InstantiationException e) {
-                log.error("Error while instantiating the SAMLResponseBuilder ", e);
-            } catch (IllegalAccessException e) {
+            } catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
                 log.error("Error while instantiating the SAMLResponseBuilder ", e);
             }
         }
@@ -1474,6 +1618,37 @@ public class SAMLSSOUtil {
         SAMLSSOUtil.tenantDomainInThreadLocal.remove();
     }
 
+    public static String getIssuerWithQualifierInThreadLocal() {
+
+        if (SAMLSSOUtil.issuerWithQualifierInThreadLocal == null) {
+            // This is the default behavior.
+            return null;
+        }
+        // This is the behaviour when an issuer qualifier is provided.
+        return (String) SAMLSSOUtil.issuerWithQualifierInThreadLocal.get();
+    }
+
+    /**
+     * Issuer with qualifier is saved to a ThreadLocal because it is needed to identify the SP
+     * to get the IdpEntityIDAlias to override IdP Entity ID when sending SAML respnse to SP.
+     *
+     * @param issuerWithQualifierInThreadLocal
+     */
+    public static void setIssuerWithQualifierInThreadLocal(String issuerWithQualifierInThreadLocal) {
+
+        if (issuerWithQualifierInThreadLocal != null) {
+            SAMLSSOUtil.issuerWithQualifierInThreadLocal.set(issuerWithQualifierInThreadLocal);
+        }
+    }
+
+    /**
+     * Remove IssuerWithQualifierInThreadLocal when finishing the whole process.
+     */
+    public static void removeIssuerWithQualifierInThreadLocal() {
+
+        SAMLSSOUtil.issuerWithQualifierInThreadLocal.remove();
+    }
+
     public static String validateTenantDomain(String tenantDomain) throws UserStoreException, IdentityException {
 
         if (tenantDomain != null && !tenantDomain.trim().isEmpty() && !"null".equalsIgnoreCase(tenantDomain.trim())) {
@@ -1486,6 +1661,41 @@ public class SAMLSSOUtil {
                 throw IdentityException.error(message);
             } else {
                 return tenantDomain;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Initialize the SPInitSSOAuthnRequestValidator
+     * @param authnRequest AuthnRequest request
+     * @param queryString encorded saml request
+     * @return SSOAuthnRequestValidator
+     */
+    public static SSOAuthnRequestValidator getSPInitSSOAuthnRequestValidator(AuthnRequest authnRequest,
+                                                                             String queryString)  {
+        if (StringUtils.isEmpty(sPInitSSOAuthnRequestValidatorClassName)) {
+            try {
+                return new SPInitSSOAuthnRequestValidator(authnRequest, queryString);
+            } catch (IdentityException e) {
+                log.error("Error while instantiating the SPInitSSOAuthnRequestValidator ", e);
+            }
+        } else {
+            try {
+                // Bundle class loader will cache the loaded class and returned
+                // the already loaded instance, hence calling this method
+                // multiple times doesn't cost.
+                Class clazz = Thread.currentThread().getContextClassLoader()
+                        .loadClass(sPInitSSOAuthnRequestValidatorClassName);
+                return (SSOAuthnRequestValidator) clazz.getDeclaredConstructor(AuthnRequest.class, String.class)
+                        .newInstance(authnRequest, queryString);
+            } catch (ClassNotFoundException | IllegalAccessException | InstantiationException e) {
+                log.error("Error while instantiating the SPInitSSOAuthnRequestValidator ", e);
+            } catch (NoSuchMethodException e) {
+                log.error("SP initiated authentication request validation class in run time does not have proper" +
+                        "constructors defined.");
+            } catch (InvocationTargetException e) {
+                log.error("Error in creating an instance of the class: " + sPInitSSOAuthnRequestValidatorClassName);
             }
         }
         return null;
@@ -1589,6 +1799,25 @@ public class SAMLSSOUtil {
         }
     }
 
+    /**
+     * Check whether an SP with an "Issuer with qualifier" exists and whether issuer value without qualifier is similar
+     * to the Issuer of SAML request.
+     *
+     * @param issuerName          Issuer of SAML request.
+     * @param issuerWithQualifier Issuer value saved in the registry.
+     * @param tenantDomain
+     * @return true, if a SAML SP exists in the registry with the issuer value similar to "issuerWithQualifier"
+     * and the SAML request's issuer is equal to the issuer without qualifier.
+     */
+    public static boolean isValidSAMLIssuer(String issuerName, String issuerWithQualifier, String tenantDomain)
+            throws IdentitySAML2SSOException {
+
+        if (isSAMLIssuerExists(issuerWithQualifier, tenantDomain)) {
+            return issuerName.equals(getIssuerWithoutQualifier(issuerWithQualifier));
+        }
+        return false;
+    }
+
     public static boolean validateACS(String tenantDomain, String issuerName, String requestedACSUrl) throws
             IdentityException {
         SSOServiceProviderConfigManager stratosIdpConfigManager = SSOServiceProviderConfigManager.getInstance();
@@ -1638,32 +1867,42 @@ public class SAMLSSOUtil {
         }
 
     }
-    public static SSOAuthnRequestValidator getSPInitSSOAuthnRequestValidator(AuthnRequest authnRequest)  {
-        if (sPInitSSOAuthnRequestValidatorClassName == null || "".equals(sPInitSSOAuthnRequestValidatorClassName)) {
-            try {
-                return new SPInitSSOAuthnRequestValidator(authnRequest);
-            } catch (IdentityException e) {
-                log.error("Error while instantiating the SPInitSSOAuthnRequestValidator ", e);
-            }
-        } else {
-            try {
+
+    /**
+     * Get SP initiated request validator.
+     *
+     * @param authnRequest authentication request
+     * @return SP initiated request validator
+     */
+    public static SSOAuthnRequestValidator getSPInitSSOAuthnRequestValidator(AuthnRequest authnRequest) {
+        SSOAuthnRequestValidator ssoAuthnRequestValidator = null;
+        try {
+            if (StringUtils.isNotBlank(sPInitSSOAuthnRequestValidatorClassName)) {
                 // Bundle class loader will cache the loaded class and returned
                 // the already loaded instance, hence calling this method
                 // multiple times doesn't cost.
                 Class clazz = Thread.currentThread().getContextClassLoader()
                         .loadClass(sPInitSSOAuthnRequestValidatorClassName);
-                return (SSOAuthnRequestValidator) clazz.getDeclaredConstructor(AuthnRequest.class).newInstance(authnRequest);
-
-            } catch (ClassNotFoundException | IllegalAccessException | InstantiationException e) {
-                log.error("Error while instantiating the SPInitSSOAuthnRequestValidator ", e);
-            } catch (NoSuchMethodException e) {
-                log.error("SP initiated authentication request validation class in run time does not have proper" +
-                        "constructors defined.");
-            } catch (InvocationTargetException e) {
-                log.error("Error in creating an instance of the class: " + sPInitSSOAuthnRequestValidatorClassName);
+                ssoAuthnRequestValidator = (SSOAuthnRequestValidator) clazz.getDeclaredConstructor(AuthnRequest.class)
+                        .newInstance(authnRequest);
+            } else if(IdentityUtil.getProperty(SAMLSSOConstants.SAML_SSO_SP_REQUEST_VALIDATOR_CONFIG_PATH) != null) {
+                Class clazz = Thread.currentThread().getContextClassLoader()
+                        .loadClass(IdentityUtil.getProperty(SAMLSSOConstants.SAML_SSO_SP_REQUEST_VALIDATOR_CONFIG_PATH)
+                                .trim());
+                ssoAuthnRequestValidator = (SSOAuthnRequestValidator) clazz.getDeclaredConstructor(AuthnRequest.class)
+                        .newInstance(authnRequest);
+            } else {
+                ssoAuthnRequestValidator = new SPInitSSOAuthnRequestValidator(authnRequest);
             }
+        } catch (ClassNotFoundException | IllegalAccessException | InstantiationException | IdentityException e) {
+            log.error("Error while instantiating the SPInitSSOAuthnRequestValidator ", e);
+        } catch (NoSuchMethodException e) {
+            log.error("SP initiated authentication request validation class in run time does not have proper" +
+                    "constructors defined.");
+        } catch (InvocationTargetException e) {
+            log.error("Error in creating an instance of the class: " + sPInitSSOAuthnRequestValidatorClassName);
         }
-        return null;
+        return ssoAuthnRequestValidator;
     }
 
     public static void setSPInitSSOAuthnRequestValidator(String sPInitSSOAuthnRequestValidator) {
@@ -1705,7 +1944,6 @@ public class SAMLSSOUtil {
     }
 
     public static void setIdPInitSSOAuthnRequestProcessor(String idPInitSSOAuthnRequestProcessor) {
-        SAMLSSOUtil.idPInitSSOAuthnRequestProcessorClassName = idPInitSSOAuthnRequestProcessor;
     }
 
     public static IdPInitSSOAuthnRequestProcessor getIdPInitSSOAuthnRequestProcessor() {
@@ -1798,11 +2036,29 @@ public class SAMLSSOUtil {
 
     public static String splitAppendedTenantDomain(String issuer) {
 
-        if (issuer.contains(UserCoreConstants.TENANT_DOMAIN_COMBINER)) {
+        if (StringUtils.isNotBlank(issuer) && issuer.contains(UserCoreConstants.TENANT_DOMAIN_COMBINER)) {
             issuer = issuer.substring(0, issuer.lastIndexOf(UserCoreConstants.TENANT_DOMAIN_COMBINER));
         }
 
         return issuer;
+    }
+
+    /**
+     * Check certificate expired or not
+     * @param certificate java.security.cert.X509Certificate
+     * @return true or false
+     */
+    public static boolean isCertificateExpired(java.security.cert.X509Certificate certificate) {
+
+        if (certificate != null) {
+            Date expiresOn = certificate.getNotAfter();
+            Date now = new Date();
+            long validityPeriod = (expiresOn.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+            if (validityPeriod >= 0) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -1842,5 +2098,453 @@ public class SAMLSSOUtil {
         logoutReqDTO.setTenantDomain(tenantDomain);
 
         return logoutReqDTO;
+    }
+
+    /**
+     * Build response status.
+     *
+     * @param statusCode Status code
+     * @param statusMsg Status message
+     * @return Response status
+     */
+    public static Status buildResponseStatus(String statusCode, String statusMsg) {
+        Status stat = new StatusBuilder().buildObject();
+
+        // Set the status code
+        StatusCode statCode = new StatusCodeBuilder().buildObject();
+        statCode.setValue(statusCode);
+        stat.setStatusCode(statCode);
+
+        // Set the status Message
+        if (statusMsg != null) {
+            StatusMessage statMesssage = new StatusMessageBuilder().buildObject();
+            statMesssage.setMessage(statusMsg);
+            stat.setStatusMessage(statMesssage);
+        }
+        return stat;
+    }
+
+    /**
+     * Get service provider config.
+     *
+     * @param tenantDomain
+     * @param issuerName
+     * @return
+     * @throws IdentityException
+     */
+    public static SAMLSSOServiceProviderDO getSPConfig(String tenantDomain, String issuerName) throws
+            IdentityException {
+
+        SSOServiceProviderConfigManager stratosIdpConfigManager = SSOServiceProviderConfigManager.getInstance();
+        SAMLSSOServiceProviderDO serviceProvider = stratosIdpConfigManager.getServiceProvider(issuerName);
+        if (serviceProvider != null) {
+            return serviceProvider;
+        }
+
+        int tenantId;
+        try {
+            if (StringUtils.isBlank(tenantDomain)) {
+                tenantDomain = MultitenantConstants.SUPER_TENANT_DOMAIN_NAME;
+                tenantId = MultitenantConstants.SUPER_TENANT_ID;
+            } else {
+                tenantId = SAMLSSOUtil.getRealmService().getTenantManager().getTenantId(tenantDomain);
+            }
+        } catch (UserStoreException e) {
+            throw new IdentitySAML2SSOException("Error occurred while retrieving tenant id for the domain : " +
+                    tenantDomain, e);
+        }
+
+        try {
+            PrivilegedCarbonContext.startTenantFlow();
+            PrivilegedCarbonContext privilegedCarbonContext = PrivilegedCarbonContext.getThreadLocalCarbonContext();
+            privilegedCarbonContext.setTenantId(tenantId, true);
+
+            IdentityPersistenceManager persistenceManager = IdentityPersistenceManager.getPersistanceManager();
+            Registry registry = (Registry) privilegedCarbonContext.getRegistry(RegistryType.SYSTEM_CONFIGURATION);
+            SAMLSSOServiceProviderDO spDO = persistenceManager.getServiceProvider(registry, issuerName);
+            return spDO;
+
+        } catch (IdentityException e) {
+            throw new IdentitySAML2SSOException("Error occurred while validating existence of SAML service provider " +
+                    "'" + issuerName + "' in the tenant domain '" + tenantDomain + "'", e);
+        } finally {
+            PrivilegedCarbonContext.endTenantFlow();
+        }
+    }
+
+    /**
+     * Build SAML logout request.
+     *
+     * @param serviceProviderDO SP for which the logout request is built.
+     * @param subject           Subject identifier.
+     * @param sessionId         Session index.
+     * @return Logout Request.
+     * @throws IdentityException If tenant domain is invalid.
+     */
+    public static LogoutRequest buildLogoutRequest(SAMLSSOServiceProviderDO serviceProviderDO, String subject,
+                                                   String sessionId) throws IdentityException {
+
+        String destination;
+        if (StringUtils.isNotBlank(serviceProviderDO.getSloRequestURL())) {
+            destination = serviceProviderDO.getSloRequestURL();
+            if (log.isDebugEnabled()) {
+                log.debug("Destination of the logout request is set to the " +
+                        "SLO request URL of the SP: " + serviceProviderDO.getSloRequestURL());
+            }
+        } else {
+            destination = serviceProviderDO.getAssertionConsumerUrl();
+            if (log.isDebugEnabled()) {
+                log.debug("Destination of the logout request is set to the " +
+                        "ACS URL of the SP: " + serviceProviderDO.getAssertionConsumerUrl());
+            }
+        }
+
+        SingleLogoutMessageBuilder logoutMsgBuilder = new SingleLogoutMessageBuilder();
+        LogoutRequest logoutReq = logoutMsgBuilder.buildLogoutRequest(destination, serviceProviderDO.getTenantDomain(),
+                sessionId, subject, serviceProviderDO.getNameIDFormat(),
+                SAMLSSOConstants.SingleLogoutCodes.LOGOUT_USER);
+
+        return logoutReq;
+    }
+
+    /**
+     * Get remaining session participants for SLO except for the original issuer.
+     *
+     * @param sessionIndex Session index.
+     * @param issuer       Original issuer.
+     * @param isIdPInitSLO Whether IdP initiated SLO or not.
+     * @return SP List with remaining session participants for SLO except for the original issuer.
+     */
+    public static List<SAMLSSOServiceProviderDO> getRemainingSessionParticipantsForSLO(
+            String sessionIndex, String issuer, boolean isIdPInitSLO) {
+
+        if (isIdPInitSLO) {
+            issuer = null;
+        }
+
+        SSOSessionPersistenceManager ssoSessionPersistenceManager = SSOSessionPersistenceManager
+                .getPersistenceManager();
+        SessionInfoData sessionInfoData = ssoSessionPersistenceManager.getSessionInfo(sessionIndex);
+
+        List<SAMLSSOServiceProviderDO> samlssoServiceProviderDOList;
+
+        if (sessionInfoData == null) {
+            return new ArrayList<>();
+        }
+
+        Map<String, SAMLSSOServiceProviderDO> sessionsList = sessionInfoData.getServiceProviderList();
+        samlssoServiceProviderDOList = new ArrayList<>();
+
+        for (Map.Entry<String, SAMLSSOServiceProviderDO> entry : sessionsList.entrySet()) {
+            SAMLSSOServiceProviderDO serviceProviderDO = entry.getValue();
+
+            // Logout request should not be created for the issuer.
+            if (entry.getKey().equals(issuer)) {
+                continue;
+            }
+
+            if (serviceProviderDO.isDoSingleLogout()) {
+                samlssoServiceProviderDOList.add(serviceProviderDO);
+            }
+        }
+
+        return samlssoServiceProviderDOList;
+    }
+
+    /**
+     * Get SessionInfoData.
+     *
+     * @param sessionIndex Session index.
+     * @return Session Info Data.
+     */
+    public static SessionInfoData getSessionInfoData(String sessionIndex) {
+
+        SSOSessionPersistenceManager ssoSessionPersistenceManager = SSOSessionPersistenceManager
+                .getPersistenceManager();
+        SessionInfoData sessionInfoData = ssoSessionPersistenceManager.getSessionInfo(sessionIndex);
+
+        return sessionInfoData;
+    }
+
+    /**
+     * Get Session Index.
+     *
+     * @param sessionId Session id.
+     * @return Session Index.
+     */
+    public static String getSessionIndex(String sessionId) {
+
+        SSOSessionPersistenceManager ssoSessionPersistenceManager = SSOSessionPersistenceManager
+                .getPersistenceManager();
+        String sessionIndex = ssoSessionPersistenceManager.getSessionIndexFromTokenId(sessionId);
+
+        return sessionIndex;
+    }
+
+    /**
+     * Construct signature for http redirect.
+     *
+     * @param httpQueryString       http query string
+     * @param signatureAlgorithmURI signature algorithm URI
+     * @param credential            X509Credential
+     */
+    public static void addSignatureToHTTPQueryString(StringBuilder httpQueryString,
+                                                     String signatureAlgorithmURI, X509Credential credential) {
+
+        try {
+            byte[] rawSignature = SigningUtil.signWithURI(credential, signatureAlgorithmURI,
+                    httpQueryString.toString().getBytes("UTF-8"));
+
+            String base64Signature = Base64.encodeBytes(rawSignature, Base64.DONT_BREAK_LINES);
+
+            if (log.isDebugEnabled()) {
+                log.debug("Generated digital signature value (base64-encoded) {} " + base64Signature);
+            }
+
+            httpQueryString.append("&" + SAMLSSOConstants.SIGNATURE + "=" +
+                    URLEncoder.encode(base64Signature, "UTF-8").trim());
+
+        } catch (org.opensaml.xml.security.SecurityException e) {
+            log.error("Unable to sign query string", e);
+        } catch (UnsupportedEncodingException e) {
+            // UTF-8 encoding is required to be supported by all JVMs.
+            log.error("Error while adding signature to HTTP query string", e);
+        }
+    }
+
+    /**
+     * Validate whether the LogoutResponse is a success.
+     *
+     * @param logoutResponse   Logout Response object.
+     * @param certificateAlias Certificate Alias.
+     * @param tenantDomain     Tenant domain.
+     * @return True if Logout response state success.
+     * @throws IdentityException If validating XML signature fails.
+     */
+    public static boolean validateLogoutResponse(LogoutResponse logoutResponse, String certificateAlias,
+                                                 String tenantDomain)
+            throws IdentityException {
+
+        if (logoutResponse.getIssuer() == null || logoutResponse.getStatus() == null || logoutResponse
+                .getStatus().getStatusCode() == null) {
+            if (log.isDebugEnabled()) {
+                log.debug("Logout response validation failed due to one of given values are null. " +
+                        "Issuer: " + logoutResponse.getIssuer() +
+                        " Status: " + logoutResponse.getStatus() +
+                        " Status code: " + (logoutResponse.getStatus() != null ? logoutResponse.getStatus()
+                        .getStatusCode() : null));
+            }
+            return false;
+        }
+
+        if (log.isDebugEnabled()) {
+            log.debug("Logout response received for issuer: " + logoutResponse.getIssuer()
+                    .getValue() + " for tenant domain: " + tenantDomain);
+        }
+
+        boolean isSignatureValid = true;
+
+        // Certificate alias will be null if signature validation is disabled in the service provider side.
+        if (certificateAlias != null && logoutResponse.isSigned()) {
+            isSignatureValid = SAMLSSOUtil.validateXMLSignature(logoutResponse, certificateAlias, tenantDomain);
+            if (log.isDebugEnabled()) {
+                log.debug("Signature validation result for logout response for issuer: " +
+                        logoutResponse.getIssuer().getValue() + " in tenant domain: " + tenantDomain + " is: " +
+                        isSignatureValid);
+            }
+        }
+        if (SAMLSSOConstants.StatusCodes.SUCCESS_CODE.equals(logoutResponse.getStatus().getStatusCode()
+                .getValue()) && isSignatureValid) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Decoding the logout request extracted from the query string.
+     *
+     * @param logoutRequest Logout request string.
+     * @param isPost        Whether the request is post.
+     * @return Logout request XML object.
+     * @throws IdentityException Error in decoding.
+     */
+    public static XMLObject decodeSamlLogoutRequest(String logoutRequest, boolean isPost) throws IdentityException {
+
+        XMLObject samlRequest;
+        if (isPost) {
+            samlRequest = SAMLSSOUtil.unmarshall(SAMLSSOUtil.decodeForPost(logoutRequest));
+        } else {
+            samlRequest = SAMLSSOUtil.unmarshall(SAMLSSOUtil.decode(logoutRequest));
+        }
+
+        return samlRequest;
+    }
+
+    public static int getSAMLSessionNotOnOrAfterPeriod(String sessionNotOnOrAfterValue) {
+
+        return Integer.parseInt(sessionNotOnOrAfterValue.trim()) * 60;
+    }
+
+    public static boolean isSAMLNotOnOrAfterPeriodDefined(String sessionNotOnOrAfterValue) {
+
+        if (StringUtils.isNotBlank(sessionNotOnOrAfterValue) && StringUtils.isNumeric(sessionNotOnOrAfterValue)) {
+            if (Integer.parseInt(sessionNotOnOrAfterValue) > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Retrieve service provider configs using issuer and tenant domain.
+     * @param issuer
+     * @param tenantDomain
+     * @return
+     * @throws IdentityException
+     */
+    public static SAMLSSOServiceProviderDO getServiceProviderConfig(String issuer, String tenantDomain)
+            throws IdentityException {
+
+        String issuerQualifier = SAMLSSOUtil.getIssuerQualifier();
+        String issuerWithQualifier = null;
+        if (issuerQualifier != null) {
+            issuerWithQualifier = SAMLSSOUtil.getIssuerWithQualifier(issuer, issuerQualifier);
+            if (SAMLSSOUtil.isValidSAMLIssuer(issuer, issuerWithQualifier,
+                                SAMLSSOUtil.getTenantDomainFromThreadLocal())) {
+                if (log.isDebugEnabled()) {
+                    String message = "A SAML request with issuer: " + issuer + " is received." +
+                            " A valid Service Provider configuration with the Issuer: " + issuer +
+                            " and Issuer Qualifier: " + issuerQualifier + " is identified by the name: " +
+                            issuerWithQualifier;
+                    log.debug(message);
+                }
+                SAMLSSOUtil.setIssuerWithQualifierInThreadLocal(issuerWithQualifier);
+
+            }
+        }
+
+        if (issuerWithQualifier != null){
+            issuer = issuerWithQualifier;
+        }
+        // Check for SaaS service providers available.
+        SSOServiceProviderConfigManager saasServiceProviderConfigManager = SSOServiceProviderConfigManager
+                .getInstance();
+        SAMLSSOServiceProviderDO serviceProviderConfigs = saasServiceProviderConfigManager.getServiceProvider
+                (issuer);
+        if (serviceProviderConfigs == null) { // Check for service providers registered in tenant
+
+            if (log.isDebugEnabled()) {
+                log.debug("No SaaS SAML service providers found for the issuer : " + issuer + ". Checking for " +
+                        "SAML service providers registered in tenant domain : " + tenantDomain);
+            }
+
+            int tenantId;
+            if (StringUtils.isBlank(tenantDomain)) {
+                tenantDomain = MultitenantConstants.SUPER_TENANT_DOMAIN_NAME;
+                tenantId = MultitenantConstants.SUPER_TENANT_ID;
+            } else {
+                try {
+                    tenantId = SAMLSSOUtil.getRealmService().getTenantManager().getTenantId(tenantDomain);
+                } catch (UserStoreException e) {
+                    throw new IdentitySAML2SSOException("Error occurred while retrieving tenant id for the " +
+                            "tenant domain : " + tenantDomain, e);
+                }
+            }
+
+            try {
+                PrivilegedCarbonContext.startTenantFlow();
+                PrivilegedCarbonContext privilegedCarbonContext = PrivilegedCarbonContext
+                        .getThreadLocalCarbonContext();
+                privilegedCarbonContext.setTenantId(tenantId);
+                privilegedCarbonContext.setTenantDomain(tenantDomain);
+                IdentityTenantUtil.getTenantRegistryLoader().loadTenantRegistry(tenantId);
+
+                IdentityPersistenceManager persistenceManager = IdentityPersistenceManager.getPersistanceManager();
+                Registry registry = (Registry) PrivilegedCarbonContext.getThreadLocalCarbonContext().getRegistry
+                        (RegistryType.SYSTEM_CONFIGURATION);
+                serviceProviderConfigs = persistenceManager.getServiceProvider(registry, issuer);
+            } catch (IdentityException | RegistryException e) {
+                throw new IdentitySAML2SSOException("Error occurred while retrieving SAML service provider for "
+                        + "issuer : " + issuer + " in tenant domain : " + tenantDomain);
+            } finally {
+                PrivilegedCarbonContext.endTenantFlow();
+            }
+        }
+
+        return serviceProviderConfigs;
+    }
+
+    /**
+     * Get issuer qualifier.
+     *
+     * @return
+     */
+    public static String getIssuerQualifier() {
+
+        return SAMLSSOUtil.issuerQualifier;
+    }
+
+    /**
+     * Set the issuer qualifier
+     *
+     * @param issuerQualifier
+     */
+    public static void setIssuerQualifier(String issuerQualifier) {
+
+        SAMLSSOUtil.issuerQualifier = issuerQualifier;
+
+    }
+
+    /**
+     * Get the issuer value by removing the qualifier.
+     *
+     * @param issuerWithQualifier issuer value saved in the registry.
+     * @return issuer value given as 'issuer' when configuring SAML SP.
+     */
+    public static String getIssuerWithoutQualifier(String issuerWithQualifier) {
+
+        String issuerWithoutQualifier = StringUtils.substringBeforeLast
+                (issuerWithQualifier, IdentityRegistryResources.QUALIFIER_ID);
+        return issuerWithoutQualifier;
+    }
+
+    /**
+     * Get the issuer value to be added to registry by appending the qualifier.
+     *
+     * @param issuer value given as 'issuer' when configuring SAML SP.
+     * @return issuer value with qualifier appended.
+     */
+    public static String getIssuerWithQualifier(String issuer, String qualifier) {
+
+        String issuerWithQualifier = issuer + IdentityRegistryResources.QUALIFIER_ID + qualifier;
+        return issuerWithQualifier;
+    }
+
+    /**
+     * Validate Signature
+     * @param authnRequest un-marshal SAML Authentication request
+     * @param queryString  marshal saml request
+     * @param issuer issuer
+     * @return
+     */
+    public static boolean isSignatureValid(AuthnRequest authnRequest, String queryString, String issuer,
+                                           java.security.cert.X509Certificate certificate) {
+
+        try {
+            if (queryString != null) {
+                // DEFLATE signature in Redirect Binding.
+                return validateDeflateSignature(queryString, issuer, certificate);
+            } else {
+                // XML signature in SAML Request message for POST Binding.
+                return validateXMLSignature(authnRequest, certificate);
+            }
+        } catch (IdentityException e) {
+            if (log.isDebugEnabled()) {
+                log.debug("Signature Validation failed for the SAMLRequest : Failed to validate the SAML Assertion " +
+                        "of the Issuer " + authnRequest.getProviderName(), e);
+            }
+            return false;
+        }
     }
 }

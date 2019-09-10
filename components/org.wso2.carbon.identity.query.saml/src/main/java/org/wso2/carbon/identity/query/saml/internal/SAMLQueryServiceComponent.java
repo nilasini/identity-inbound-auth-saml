@@ -37,7 +37,7 @@ import org.wso2.carbon.user.core.service.RealmService;
         immediate = true)
 public class SAMLQueryServiceComponent {
 
-    private static Log log = LogFactory.getLog(SAMLQueryServiceComponent.class);
+    private static final Log log = LogFactory.getLog(SAMLQueryServiceComponent.class);
 
     private static RealmService realmservice = null;
 
@@ -86,7 +86,7 @@ public class SAMLQueryServiceComponent {
             cardinality = ReferenceCardinality.MANDATORY,
             policy = ReferencePolicy.DYNAMIC,
             unbind = "unsetRealmService")
-    protected static void setRealmService(RealmService realmService) {
+    protected void setRealmService(RealmService realmService) {
 
         realmservice = realmService;
         if (log.isDebugEnabled()) {
@@ -99,7 +99,7 @@ public class SAMLQueryServiceComponent {
      *
      * @param realmService <code>RealmService</code>
      */
-    protected static void unsetRealmService(RealmService realmService) {
+    protected void unsetRealmService(RealmService realmService) {
 
         realmservice = null;
         if (log.isDebugEnabled()) {

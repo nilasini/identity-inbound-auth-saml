@@ -25,6 +25,7 @@ import org.opensaml.saml1.core.NameIdentifier;
 import org.wso2.carbon.base.MultitenantConstants;
 import org.wso2.carbon.core.util.KeyStoreManager;
 import org.wso2.carbon.identity.base.IdentityException;
+import org.wso2.carbon.identity.core.IdentityRegistryResources;
 import org.wso2.carbon.identity.core.model.SAMLSSOServiceProviderDO;
 import org.wso2.carbon.identity.core.persistence.IdentityPersistenceManager;
 import org.wso2.carbon.identity.core.util.IdentityTenantUtil;
@@ -49,7 +50,7 @@ import java.security.cert.CertificateException;
  */
 public class SAMLSSOConfigAdmin {
 
-    private static Log log = LogFactory.getLog(SAMLSSOConfigAdmin.class);
+    private static final Log log = LogFactory.getLog(SAMLSSOConfigAdmin.class);
     private UserRegistry registry;
 
     public SAMLSSOConfigAdmin(Registry userRegistry) {
@@ -187,11 +188,21 @@ public class SAMLSSOConfigAdmin {
             throw IdentityException.error(message);
         }
 
+        if (StringUtils.isNotBlank(serviceProviderDTO.getIssuerQualifier()) && serviceProviderDTO.getIssuerQualifier()
+                .contains("@")) {
+            String message = "\'@\' is a reserved character. Cannot be used for Service Provider Qualifier Value";
+            log.error(message);
+            throw IdentityException.error(message);
+        }
+
         serviceProviderDO.setIssuer(serviceProviderDTO.getIssuer());
+        serviceProviderDO.setIssuerQualifier(serviceProviderDTO.getIssuerQualifier());
         serviceProviderDO.setAssertionConsumerUrls(serviceProviderDTO.getAssertionConsumerUrls());
         serviceProviderDO.setDefaultAssertionConsumerUrl(serviceProviderDTO.getDefaultAssertionConsumerUrl());
         serviceProviderDO.setCertAlias(serviceProviderDTO.getCertAlias());
         serviceProviderDO.setDoSingleLogout(serviceProviderDTO.isDoSingleLogout());
+        serviceProviderDO.setDoFrontChannelLogout(serviceProviderDTO.isDoFrontChannelLogout());
+        serviceProviderDO.setFrontChannelLogoutBinding(serviceProviderDTO.getFrontChannelLogoutBinding());
         serviceProviderDO.setSloResponseURL(serviceProviderDTO.getSloResponseURL());
         serviceProviderDO.setSloRequestURL(serviceProviderDTO.getSloRequestURL());
         serviceProviderDO.setLoginPageURL(serviceProviderDTO.getLoginPageURL());
@@ -205,7 +216,9 @@ public class SAMLSSOConfigAdmin {
         serviceProviderDO.setAssertionQueryRequestProfileEnabled(serviceProviderDTO
                 .isAssertionQueryRequestProfileEnabled());
         serviceProviderDO.setSupportedAssertionQueryRequestTypes(serviceProviderDTO.getSupportedAssertionQueryRequestTypes());
-
+        serviceProviderDO.setEnableSAML2ArtifactBinding(serviceProviderDTO.isEnableSAML2ArtifactBinding());
+        serviceProviderDO.setDoValidateSignatureInArtifactResolve(serviceProviderDTO
+                .isDoValidateSignatureInArtifactResolve());
         if (serviceProviderDTO.getNameIDFormat() == null) {
             serviceProviderDTO.setNameIDFormat(NameIdentifier.EMAIL);
         } else {
@@ -243,6 +256,7 @@ public class SAMLSSOConfigAdmin {
         serviceProviderDO.setIdpInitSLOReturnToURLs(serviceProviderDTO.getIdpInitSLOReturnToURLs());
         serviceProviderDO.setDoEnableEncryptedAssertion(serviceProviderDTO.isDoEnableEncryptedAssertion());
         serviceProviderDO.setDoValidateSignatureInRequests(serviceProviderDTO.isDoValidateSignatureInRequests());
+        serviceProviderDO.setIdpEntityIDAlias(serviceProviderDTO.getIdpEntityIDAlias());
         return serviceProviderDO;
     }
 
@@ -262,7 +276,15 @@ public class SAMLSSOConfigAdmin {
             throw IdentityException.error(message);
         }
 
+        if (StringUtils.isNotBlank(serviceProviderDO.getIssuerQualifier()) && serviceProviderDO.getIssuerQualifier()
+                .contains("@")) {
+            String message = "\'@\' is a reserved character. Cannot be used for Service Provider Qualifier Value";
+            log.error(message);
+            throw IdentityException.error(message);
+        }
+
         serviceProviderDTO.setIssuer(serviceProviderDO.getIssuer());
+        serviceProviderDTO.setIssuerQualifier(serviceProviderDO.getIssuerQualifier());
         serviceProviderDTO.setAssertionConsumerUrls(serviceProviderDO.getAssertionConsumerUrls());
         serviceProviderDTO.setDefaultAssertionConsumerUrl(serviceProviderDO.getDefaultAssertionConsumerUrl());
         serviceProviderDTO.setCertAlias(serviceProviderDO.getCertAlias());
@@ -279,6 +301,8 @@ public class SAMLSSOConfigAdmin {
         }
 
         serviceProviderDTO.setDoSingleLogout(serviceProviderDO.isDoSingleLogout());
+        serviceProviderDTO.setDoFrontChannelLogout(serviceProviderDO.isDoFrontChannelLogout());
+        serviceProviderDTO.setFrontChannelLogoutBinding(serviceProviderDO.getFrontChannelLogoutBinding());
         serviceProviderDTO.setLoginPageURL(serviceProviderDO.getLoginPageURL());
         serviceProviderDTO.setSloRequestURL(serviceProviderDO.getSloRequestURL());
         serviceProviderDTO.setSloResponseURL(serviceProviderDO.getSloResponseURL());
@@ -294,6 +318,9 @@ public class SAMLSSOConfigAdmin {
         serviceProviderDTO.setSupportedAssertionQueryRequestTypes(serviceProviderDO
                 .getSupportedAssertionQueryRequestTypes());
         serviceProviderDTO.setEnableAttributesByDefault(serviceProviderDO.isEnableAttributesByDefault());
+        serviceProviderDTO.setEnableSAML2ArtifactBinding(serviceProviderDO.isEnableSAML2ArtifactBinding());
+        serviceProviderDTO.setDoValidateSignatureInArtifactResolve(serviceProviderDO
+                .isDoValidateSignatureInArtifactResolve());
 
         if (serviceProviderDO.getNameIDFormat() == null) {
             serviceProviderDO.setNameIDFormat(NameIdentifier.EMAIL);
@@ -303,9 +330,9 @@ public class SAMLSSOConfigAdmin {
 
         serviceProviderDTO.setNameIDFormat(serviceProviderDO.getNameIDFormat());
 
-        if (serviceProviderDO.getAttributeConsumingServiceIndex() != null && !serviceProviderDO
-                .getAttributeConsumingServiceIndex().equals("")) {
+        if (StringUtils.isNotBlank(serviceProviderDO.getAttributeConsumingServiceIndex())) {
             serviceProviderDTO.setAttributeConsumingServiceIndex(serviceProviderDO.getAttributeConsumingServiceIndex());
+            serviceProviderDTO.setEnableAttributeProfile(true);
         }
 
         if (serviceProviderDO.getRequestedAudiences() != null && serviceProviderDO.getRequestedAudiences().length !=
@@ -319,7 +346,7 @@ public class SAMLSSOConfigAdmin {
         serviceProviderDTO.setIdPInitSSOEnabled(serviceProviderDO.isIdPInitSSOEnabled());
         serviceProviderDTO.setDoEnableEncryptedAssertion(serviceProviderDO.isDoEnableEncryptedAssertion());
         serviceProviderDTO.setDoValidateSignatureInRequests(serviceProviderDO.isDoValidateSignatureInRequests());
-
+        serviceProviderDTO.setIdpEntityIDAlias(serviceProviderDO.getIdpEntityIDAlias());
         return serviceProviderDTO;
     }
 
@@ -340,6 +367,7 @@ public class SAMLSSOConfigAdmin {
                 SAMLSSOServiceProviderDO providerDO = providersSet[i];
                 SAMLSSOServiceProviderDTO providerDTO = new SAMLSSOServiceProviderDTO();
                 providerDTO.setIssuer(providerDO.getIssuer());
+                providerDTO.setIssuerQualifier(providerDO.getIssuerQualifier());
                 providerDTO.setAssertionConsumerUrls(providerDO.getAssertionConsumerUrls());
                 providerDTO.setDefaultAssertionConsumerUrl(providerDO.getDefaultAssertionConsumerUrl());
                 providerDTO.setSigningAlgorithmURI(providerDO.getSigningAlgorithmUri());
@@ -348,11 +376,21 @@ public class SAMLSSOConfigAdmin {
                 providerDTO.setKeyEncryptionAlgorithmURI(providerDO.getKeyEncryptionAlgorithmUri());
                 providerDTO.setCertAlias(providerDO.getCertAlias());
                 providerDTO.setAttributeConsumingServiceIndex(providerDO.getAttributeConsumingServiceIndex());
+
+                if (StringUtils.isNotBlank(providerDO.getAttributeConsumingServiceIndex())) {
+                    providerDTO.setEnableAttributeProfile(true);
+                }
+
                 providerDTO.setDoSignResponse(providerDO.isDoSignResponse());
                 providerDTO.setDoSignAssertions(providerDO.isDoSignAssertions());
                 providerDTO.setDoSingleLogout(providerDO.isDoSingleLogout());
+                providerDTO.setDoFrontChannelLogout(providerDO.isDoFrontChannelLogout());
+                providerDTO.setFrontChannelLogoutBinding(providerDO.getFrontChannelLogoutBinding());
                 providerDTO.setAssertionQueryRequestProfileEnabled(providerDO.isAssertionQueryRequestProfileEnabled());
                 providerDTO.setSupportedAssertionQueryRequestTypes(providerDO.getSupportedAssertionQueryRequestTypes());
+                providerDTO.setEnableSAML2ArtifactBinding(providerDO.isEnableSAML2ArtifactBinding());
+                providerDTO.setDoValidateSignatureInArtifactResolve(
+                        providerDO.isDoValidateSignatureInArtifactResolve());
 
                 if (providerDO.getLoginPageURL() == null || "null".equals(providerDO.getLoginPageURL())) {
                     providerDTO.setLoginPageURL("");
@@ -379,6 +417,7 @@ public class SAMLSSOConfigAdmin {
                 providerDTO.setIdpInitSLOReturnToURLs(providerDO.getIdpInitSLOReturnToURLs());
                 providerDTO.setDoEnableEncryptedAssertion(providerDO.isDoEnableEncryptedAssertion());
                 providerDTO.setDoValidateSignatureInRequests(providerDO.isDoValidateSignatureInRequests());
+                providerDTO.setIdpEntityIDAlias(providerDO.getIdpEntityIDAlias());
                 serviceProviders[i] = providerDTO;
             }
         } catch (IdentityException e) {
